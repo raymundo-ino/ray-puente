@@ -423,8 +423,9 @@ function outSize(q,maxSide,iw,ih){var d=function(a,b){return Math.hypot(a[0]-b[0
 function warp(img,q,W,H){var M=homog([[0,0],[W-1,0],[W-1,H-1],[0,H-1]],q);if(!M)return null;
  var sw=img.w,sh=img.h,s=img.data,o=new Uint8ClampedArray(W*H*4),x,y,p=0,c,dd=function(a,b){return Math.hypot(a[0]-b[0],a[1]-b[1])},
   sc=Math.max(Math.max(dd(q[0],q[1]),dd(q[3],q[2]))/W,Math.max(dd(q[0],q[3]),dd(q[1],q[2]))/H),ss=sc>1.6?Math.min(3,Math.round(sc)):1,
-  wx=new Float64Array(4),wy=new Float64Array(4),ix=new Int32Array(4),iy=new Int32Array(4),a0,a1,a2,mx=sw-1.001,my=sh-1.001;
+  wx=new Float64Array(4),wy=new Float64Array(4),ix=new Int32Array(4),iy=new Int32Array(4),a0,a1,a2,mx=sw-1.001,my=sh-1.001,ob=null;
  for(y=0;y<H;y++){for(x=0;x<W;x++,p+=4){
+   var zc=M[6]*x+M[7]*y+M[8],cx=(M[0]*x+M[1]*y+M[2])/zc,cy=(M[3]*x+M[4]*y+M[5])/zc;if(cx<-0.5||cy<-0.5||cx>sw-0.5||cy>sh-0.5){if(!ob)ob=new Uint8Array(W*H);ob[y*W+x]=1}
    if(ss>1){a0=a1=a2=0;for(var j=0;j<ss;j++)for(var i=0;i<ss;i++){var X=x+(i+0.5)/ss-0.5,Y=y+(j+0.5)/ss-0.5,z=M[6]*X+M[7]*Y+M[8],fx=(M[0]*X+M[1]*Y+M[2])/z,fy=(M[3]*X+M[4]*Y+M[5])/z;
      if(fx<0)fx=0;else if(fx>mx)fx=mx;if(fy<0)fy=0;else if(fy>my)fy=my;var x0=fx|0,y0=fy|0,ax=fx-x0,ay=fy-y0,i0=(y0*sw+x0)*4,i1=i0+sw*4;
      a0+=(s[i0]+(s[i0+4]-s[i0])*ax)*(1-ay)+(s[i1]+(s[i1+4]-s[i1])*ax)*ay;a1+=(s[i0+1]+(s[i0+5]-s[i0+1])*ax)*(1-ay)+(s[i1+1]+(s[i1+5]-s[i1+1])*ax)*ay;a2+=(s[i0+2]+(s[i0+6]-s[i0+2])*ax)*(1-ay)+(s[i1+2]+(s[i1+6]-s[i1+2])*ax)*ay}
@@ -434,7 +435,53 @@ function warp(img,q,W,H){var M=homog([[0,0],[W-1,0],[W-1,H-1],[0,H-1]],q);if(!M)
     a0=a1=a2=0;for(var m=0;m<4;m++){var r0=iy[m],wm=wy[m];for(k=0;k<4;k++){var q0=r0+ix[k],ww=wm*wx[k];a0+=s[q0]*ww;a1+=s[q0+1]*ww;a2+=s[q0+2]*ww}}
     o[p]=a0;o[p+1]=a1;o[p+2]=a2}
    o[p+3]=255}}
- return {w:W,h:H,data:o}}
+ return edgeFill({w:W,h:H,data:o},ob)}
+/* --- v16.9 orillas como CamScanner: lo que quedó fuera de la foto y las franjas oscuras (escritorio, sombra del borde)
+   que tocan la orilla de la hoja se rellenan con el papel de alrededor. No toca líneas de tablas ni texto: solo zonas
+   gruesas pegadas a la orilla y dentro de una franja del 9 % del lado menor. --- */
+function edgeFill(img,ob){var w=img.w,h=img.h,n=w*h,d=img.data;if(w<24||h<24)return img;
+ var f=Math.max(1,Math.round(Math.max(w,h)/360)),sw=Math.ceil(w/f),sh=Math.ceil(h/f),N=sw*sh,R=new Float32Array(N),G=new Float32Array(N),B=new Float32Array(N),C=new Float32Array(N),O=new Float32Array(N),x,y,i,k;
+ for(y=0;y<h;y++){var sy=((y/f)|0)*sw;for(x=0;x<w;x++){var j=sy+((x/f)|0),p=(y*w+x)*4;R[j]+=d[p];G[j]+=d[p+1];B[j]+=d[p+2];C[j]++;if(ob&&ob[y*w+x])O[j]++}}
+ var L=new Float32Array(N);for(i=0;i<N;i++){R[i]/=C[i];G[i]/=C[i];B[i]/=C[i];O[i]/=C[i];L[i]=0.299*R[i]+0.587*G[i]+0.114*B[i]}
+ var mn=Math.min(sw,sh),b0=Math.max(1,Math.round(mn*0.05)),b1=Math.max(b0+2,Math.round(mn*0.18)),band=[];
+ function ed(i){var X=i%sw,Y=(i-X)/sw;return Math.min(X,Y,sw-1-X,sh-1-Y)}
+ for(i=0;i<N;i++){var e=ed(i);if(e>=b0&&e<=b1&&O[i]<0.01)band.push(L[i])}
+ if(band.length<20)return img;band.sort(function(a,b){return a-b});var P=band[Math.floor(band.length*0.8)],pr=0,pg=0,pb=0,pc=0;
+ for(i=0;i<N;i++){var e2=ed(i);if(e2>=b0&&e2<=b1&&O[i]<0.01&&L[i]>=P*0.93){pr+=R[i];pg+=G[i];pb+=B[i];pc++}}
+ if(!pc)return img;pr/=pc;pg/=pc;pb/=pc;
+ var paper=P>=95,db=Math.max(2,Math.round(mn*0.09)),D=new Uint8Array(N);
+ for(i=0;i<N;i++){if(O[i]>0.3){D[i]=2;continue}if(!paper)continue;var dc=Math.abs(R[i]-pr)+Math.abs(G[i]-pg)+Math.abs(B[i]-pb);if(L[i]<P*0.66||(dc>110&&L[i]<P*0.88))D[i]=1}
+ /* apertura: la erosión borra lo delgado (líneas, texto); afuera de la imagen cuenta como oscuro */
+ var Er=new Uint8Array(N);for(y=0;y<sh;y++)for(x=0;x<sw;x++){var q=y*sw+x;if(!D[q])continue;var ok=1;for(var yy=y-1;yy<=y+1&&ok;yy++)for(var xx=x-1;xx<=x+1&&ok;xx++){if(xx<0||yy<0||xx>=sw||yy>=sh)continue;if(!D[yy*sw+xx])ok=0}Er[q]=ok}
+ /* solo lo que toca la orilla (o lo que quedó fuera de la foto);
+    cada zona se quita completa solo si es poco profunda (franja de la orilla); si entra mucho en la hoja no se toca */
+ var M=new Uint8Array(N),V=new Uint8Array(N),seeds=[];for(x=0;x<sw;x++)seeds.push(x,(sh-1)*sw+x);for(y=0;y<sh;y++)seeds.push(y*sw,y*sw+sw-1);for(i=0;i<N;i++)if(D[i]===2)seeds.push(i);
+ seeds.forEach(function(s0){if(V[s0]||!(Er[s0]||D[s0]===2))return;var st=[s0],comp=[],deep=0;V[s0]=1;
+  while(st.length){var k=st.pop();comp.push(k);if(D[k]!==2){var e3=ed(k);if(e3>deep)deep=e3}var X2=k%sw,Y2=(k-X2)/sw,nb=[X2>0?k-1:-1,X2<sw-1?k+1:-1,Y2>0?k-sw:-1,Y2<sh-1?k+sw:-1];
+   for(var a=0;a<4;a++){var z=nb[a];if(z<0||V[z]||!(Er[z]||D[z]===2))continue;V[z]=1;st.push(z)}}
+  var all=deep<=db;comp.forEach(function(c){if(all||D[c]===2)M[c]=1})});
+ /* franjas delgadas pegadas a la orilla (la erosión las borra): por cada lado se mide cuánto entra lo oscuro desde la orilla;
+    si entra poco y sigue a lo largo de la orilla un buen tramo, es escritorio. Una línea de tabla que llega a la orilla entra mucho y no se toca. */
+ var dt=Math.max(1,Math.round(mn*0.045));
+ [[sw,sh,function(a,r){return r*sw+a}],[sw,sh,function(a,r){return (sh-1-r)*sw+a}],[sh,sw,function(a,r){return a*sw+r}],[sh,sw,function(a,r){return a*sw+(sw-1-r)}]].forEach(function(S){
+  var len=S[0],dep=S[1],at=S[2],run=new Int16Array(len),a,r;
+  for(a=0;a<len;a++){for(r=0;r<dep&&D[at(a,r)];r++);run[a]=r}
+  var minLen=Math.max(3,Math.round(len*0.05));for(a=0;a<len;){if(run[a]<1||run[a]>dt){a++;continue}var b2=a;while(b2<len&&run[b2]>=1&&run[b2]<=dt+1)b2++;
+   if(b2-a>=minLen)for(var t2=a;t2<b2;t2++)for(r=0;r<run[t2];r++)M[at(t2,r)]=1;a=b2}});
+ /* recuperar el borde que quitó la erosión y la orla de sombra */
+ for(var it=0;it<3;it++){var M2=M.slice();for(i=0;i<N;i++){if(M[i])continue;var X3=i%sw,Y3=(i-X3)/sw;if(it<2?!D[i]:(ed(i)>db+1||L[i]>=P*0.9))continue;
+   if((X3>0&&M[i-1])||(X3<sw-1&&M[i+1])||(Y3>0&&M[i-sw])||(Y3<sh-1&&M[i+sw]))M2[i]=1}M=M2}
+ var cnt=0;for(i=0;i<N;i++)cnt+=M[i];
+ if(cnt>N*0.3){cnt=0;for(i=0;i<N;i++){M[i]=D[i]===2?1:0;cnt+=M[i]}}
+ if(!cnt&&!ob)return img;
+ var FM=new Uint8Array(n),any=false;for(y=0;y<h;y++){var sy3=((y/f)|0)*sw;for(x=0;x<w;x++){var c3=sy3+((x/f)|0),t=y*w+x;if(M[c3]||(ob&&ob[t])){FM[t]=1;any=true}}}
+ if(!any)return img;
+ var CH=chans(d,n);
+ if(paper){var Kw=new Float32Array(n);for(i=0;i<n;i++){var lp=0.299*CH[0][i]+0.587*CH[1][i]+0.114*CH[2][i];Kw[i]=lp>=P*0.88?1:0.04}inpaint(CH,w,h,FM,Kw)}
+ else{for(i=0;i<n;i++)if(FM[i]){CH[0][i]=pr;CH[1][i]=pg;CH[2][i]=pb}}
+ for(i=0;i<n;i++)if(FM[i]){var p2=i*4;d[p2]=CH[0][i];d[p2+1]=CH[1][i];d[p2+2]=CH[2][i]}
+ return img}
+
 function rotate(img,k){k=((k%4)+4)%4;if(!k)return img;var w=img.w,h=img.h,s=img.data,W=k%2?h:w,H=k%2?w:h,o=new Uint8ClampedArray(W*H*4),x,y;
  for(y=0;y<h;y++)for(x=0;x<w;x++){var nx,ny;if(k===1){nx=h-1-y;ny=x}else if(k===2){nx=w-1-x;ny=h-1-y}else{nx=y;ny=w-1-x}
   var a=(y*w+x)*4,b=(ny*W+nx)*4;o[b]=s[a];o[b+1]=s[a+1];o[b+2]=s[a+2];o[b+3]=255}
