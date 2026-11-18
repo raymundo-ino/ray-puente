@@ -416,11 +416,11 @@ function outSize(q,maxSide,iw,ih){var d=function(a,b){return Math.hypot(a[0]-b[0
  var w=Math.max(d(q[0],q[1]),d(q[3],q[2])),h=Math.max(d(q[0],q[3]),d(q[1],q[2]));
  /* v15.6: proporción real de la hoja (corrige la perspectiva) y ajuste a Carta / A4 / Oficio si está muy cerca */
  var rect=Math.abs(d(q[0],q[1])-d(q[3],q[2]))<0.003*w&&Math.abs(d(q[0],q[3])-d(q[1],q[2]))<0.003*h&&Math.abs(q[0][1]-q[1][1])<0.003*h&&Math.abs(q[0][0]-q[3][0])<0.003*w;
- if(iw&&ih&&!rect){var r=aspect(q,iw,ih),r0=w/h;if(r>0&&r/r0<1.6&&r0/r<1.6){r=snapRatio(r);var lg=Math.max(w,h);if(r>=1){w=lg;h=lg/r}else{h=lg;w=lg*r}}}
+ if(iw&&ih&&!rect){var r=aspect(q,iw,ih),r0=w/h;if(r>0&&r/r0<2.5&&r0/r<2.5){r=snapRatio(r);var lg=Math.max(w,h);if(r>=1){w=lg;h=lg/r}else{h=lg;w=lg*r}}}
  var s=Math.min(1,maxSide/Math.max(w,h));return [Math.max(8,Math.round(w*s)),Math.max(8,Math.round(h*s))]}
 /* img: imagen fuente; q: 4 esquinas en píxeles (TL,TR,BR,BL); W,H: tamaño de salida
    v15.6: bicúbico al ampliar (letras más nítidas) y varias muestras por píxel al reducir mucho (sin dientes ni moiré) */
-function warp(img,q,W,H){var M=homog([[0,0],[W-1,0],[W-1,H-1],[0,H-1]],q);if(!M)return null;
+function warp(img,q,W,H,noAlign){var M=homog([[0,0],[W-1,0],[W-1,H-1],[0,H-1]],q);if(!M)return null;if(!noAlign){var Ma=alignM(img,q,W,H,M);if(Ma)M=Ma}
  var sw=img.w,sh=img.h,s=img.data,o=new Uint8ClampedArray(W*H*4),x,y,p=0,c,dd=function(a,b){return Math.hypot(a[0]-b[0],a[1]-b[1])},
   sc=Math.max(Math.max(dd(q[0],q[1]),dd(q[3],q[2]))/W,Math.max(dd(q[0],q[3]),dd(q[1],q[2]))/H),ss=sc>1.6?Math.min(3,Math.round(sc)):1,
   wx=new Float64Array(4),wy=new Float64Array(4),ix=new Int32Array(4),iy=new Int32Array(4),a0,a1,a2,mx=sw-1.001,my=sh-1.001,ob=null;
@@ -436,6 +436,112 @@ function warp(img,q,W,H){var M=homog([[0,0],[W-1,0],[W-1,H-1],[0,H-1]],q);if(!M)
     o[p]=a0;o[p+1]=a1;o[p+2]=a2}
    o[p+3]=255}}
  return edgeFill({w:W,h:H,data:o},ob)}
+/* --- v16.10 alinear la hoja como CamScanner: después de enderezar con las 4 esquinas se miden las líneas rectas del
+   documento (bordes de tablas, recuadros, renglones) y, si todavía se ven inclinadas o «de lado», se corrige la perspectiva
+   para que queden derechas. Sin líneas se usa la inclinación de los renglones de texto. Corrige solo inclinaciones
+   pequeñas (hasta 6°) y no toca la hoja si no encuentra suficientes líneas. --- */
+function alignM(img,q,W,H,M){try{
+ var f=Math.max(1,Math.max(W,H)/720),w=Math.max(8,Math.round(W/f)),h=Math.max(8,Math.round(H/f)),n=w*h,sw=img.w,sh=img.h,s=img.data,
+  L=new Float32Array(n),O=new Uint8Array(n),x,y,i,kx=(W-1)/(w-1),ky=(H-1)/(h-1);
+ for(y=0,i=0;y<h;y++)for(x=0;x<w;x++,i++){var X=x*kx,Y=y*ky,z=M[6]*X+M[7]*Y+M[8],fx=(M[0]*X+M[1]*Y+M[2])/z,fy=(M[3]*X+M[4]*Y+M[5])/z;
+  if(fx<0||fy<0||fx>sw-1.001||fy>sh-1.001){O[i]=1;L[i]=255;continue}
+  var x0=fx|0,y0=fy|0,ax=fx-x0,ay=fy-y0,p0=(y0*sw+x0)*4,p1=p0+sw*4;
+  var l0=Math.min(s[p0],s[p0+1],s[p0+2]),l1=Math.min(s[p0+4],s[p0+5],s[p0+6]),l2=Math.min(s[p1],s[p1+1],s[p1+2]),l3=Math.min(s[p1+4],s[p1+5],s[p1+6]);
+  L[i]=(l0+(l1-l0)*ax)*(1-ay)+(l2+(l3-l2)*ax)*ay}
+ var bg=boxBlur(boxBlur(L,w,h,12),w,h,12),D=new Uint8Array(n),mgx=Math.round(w*0.03),mgy=Math.round(h*0.03),nd=0;
+ for(y=mgy;y<h-mgy;y++)for(x=mgx;x<w-mgx;x++){i=y*w+x;if(!O[i]&&L[i]<bg[i]*0.8&&L[i]<bg[i]-18){D[i]=1;nd++}}
+ if(nd<n*0.002)return null;
+ /* líneas casi verticales (vert=1) o casi horizontales (vert=0) */
+ function lines(vert){var A=vert?h:w,B=vert?w:h,R=Math.max(12,Math.round(A*0.045)),S=new Uint8Array(n),a,b,run,st;
+  function at(a,b){return vert?D[a*w+b]||(b>0&&D[a*w+b-1])||(b<w-1&&D[a*w+b+1]):D[b*w+a]||(b>0&&D[(b-1)*w+a])||(b<h-1&&D[(b+1)*w+a])}
+  for(b=0;b<B;b++){run=0;var gap=0,a0=0;for(a=0;a<=A;a++){var on=a<A&&at(a,b);if(on){if(!run)a0=a;run=a-a0+1;gap=0}else if(run&&gap<2&&a<A){gap++}else{if(run>=R)for(st=a0;st<a0+run;st++)if(vert?D[st*w+b]:D[b*w+st])S[vert?st*w+b:b*w+st]=1;run=0;gap=0}}}
+  var P=[];for(i=0;i<n;i++)if(S[i]){var px=i%w,py=(i-px)/w;P.push(vert?[py,px]:[px,py])} /* [a (a lo largo), b (a lo ancho)] */
+  if(P.length<A*0.3)return [];
+  var NT=141,T=new Float64Array(NT),ac=new Int32Array(NT*B),c0=A/2,t,k;for(t=0;t<NT;t++)T[t]=Math.tan((t-70)*0.1*Math.PI/180);
+  for(k=0;k<P.length;k++){var pa=P[k][0]-c0,pb=P[k][1];for(t=0;t<NT;t++){var bc=Math.round(pb-T[t]*pa);if(bc>=0&&bc<B)ac[t*B+bc]++}}
+  var mv=Math.round(A*0.18),pk=[];for(t=0;t<NT;t++)for(b=0;b<B;b++){var v=ac[t*B+b];if(v<mv)continue;var ok=true;
+   for(var dt=-4;dt<=4&&ok;dt++)for(var db=-4;db<=4;db++){var tt=t+dt,bb=b+db;if((dt||db)&&tt>=0&&tt<NT&&bb>=0&&bb<B){var u=ac[tt*B+bb];if(u>v||(u===v&&(dt<0||(dt===0&&db<0)))){ok=false;break}}}
+   if(ok)pk.push([v,t,b])}
+  pk.sort(function(p,r){return r[0]-p[0]});pk=pk.slice(0,40);
+  var out=[];pk.forEach(function(p){var sl=T[p[1]],bc=p[2],it;
+   for(it=0;it<2;it++){var sa=0,sb=0,saa=0,sab=0,cnt=0,lo=1e9,hi=-1e9;
+    for(k=0;k<P.length;k++){var pa=P[k][0]-c0,pb=P[k][1];if(Math.abs(pb-(bc+sl*pa))<=2){sa+=pa;sb+=pb;saa+=pa*pa;sab+=pa*pb;cnt++;if(pa<lo)lo=pa;if(pa>hi)hi=pa}}
+    if(cnt<A*0.15)return;var dn=cnt*saa-sa*sa;if(dn<=0)return;sl=(cnt*sab-sa*sb)/dn;bc=(sb-sl*sa)/cnt}
+   if(hi-lo<A*0.22||Math.abs(sl)>0.105)return;
+   for(var j=0;j<out.length;j++)if(Math.abs(out[j].c-bc)<6)return;
+   out.push({c:bc,s:sl,wt:hi-lo})});
+  return out}
+ /* modelo: pendiente = p0 + p1·(posición − centro) */
+ function model(Ls,B){if(Ls.length<2)return null;var c=B/2,best=null,bw=0,i,j;
+  function inl(p0,p1,tol){return Ls.filter(function(l){return Math.abs(l.s-(p0+p1*(l.c-c)))<tol})}
+  function wsum(U){var t=0;U.forEach(function(l){t+=l.wt});return t}
+  for(i=0;i<Ls.length;i++){var cand=[[Ls[i].s,0]];for(j=i+1;j<Ls.length;j++){var dc=Ls[j].c-Ls[i].c;if(Math.abs(dc)<B*0.15)continue;var p1=(Ls[j].s-Ls[i].s)/dc;if(Math.abs(p1)*B/2>0.06)continue;cand.push([Ls[i].s-p1*(Ls[i].c-c),p1])}
+   cand.forEach(function(m){var U=inl(m[0],m[1],0.005),ww=wsum(U)*(m[1]?1:1.08);if(U.length>=2&&ww>bw){bw=ww;best=m}})}
+  if(!best)return null;var p0=best[0],p1=best[1],use=inl(p0,p1,0.005);
+  for(var it=0;it<2;it++){if(use.length<2)return null;var sw0=0,sx=0,sy=0,sxx=0,sxy=0;use.forEach(function(l){var u=l.c-c;sw0+=l.wt;sx+=l.wt*u;sy+=l.wt*l.s;sxx+=l.wt*u*u;sxy+=l.wt*u*l.s});
+   var mn=Math.min.apply(null,use.map(function(l){return l.c})),mx=Math.max.apply(null,use.map(function(l){return l.c}));
+   if(use.length>=3&&mx-mn>=B*0.3){var dn=sw0*sxx-sx*sx;p1=(sw0*sxy-sx*sy)/dn;p0=(sy-p1*sx)/sw0}else{p1=0;p0=sy/sw0}
+   use=inl(p0,p1,0.005)}
+  if(use.length<2)return null;return {p0:p0,p1:p1,n:use.length}}
+ var Vm=model(lines(1),w),Hm=model(lines(0),h);
+ if(!Vm&&!Hm){/* sin líneas: inclinación de los renglones de texto */
+  var best=0,bs=-1,s0=0,ang;for(ang=-40;ang<=40;ang+=2){var tg=Math.tan(ang*0.1*Math.PI/180),hist=new Float64Array(h+1),sc=0;
+   for(y=mgy;y<h-mgy;y+=1)for(x=mgx;x<w-mgx;x+=2){i=y*w+x;if(D[i]){var yy=Math.round(y-tg*(x-w/2));if(yy>=0&&yy<=h)hist[yy]++}}
+   for(i=0;i<=h;i++)sc+=hist[i]*hist[i];if(ang===0)s0=sc;if(sc>bs){bs=sc;best=ang}}
+  if(!best||bs<s0*1.04)return null;Hm={p0:Math.tan(best*0.1*Math.PI/180),p1:0}}
+ if(!Vm)Vm={p0:-Hm.p0,p1:0};if(!Hm)Hm={p0:-Vm.p0,p1:0};
+ /* esquinas de la hoja tal como se ven (con la inclinación medida) y a dónde deben ir */
+ function sv(X){return Vm.p0+Vm.p1*(X-w/2)}function shz(Y){return Hm.p0+Hm.p1*(Y-h/2)}
+ var lx=[0,w-1],ty=[0,h-1],Dc=[],Ic=[[0,0],[w-1,0],[w-1,h-1],[0,h-1]];
+ [[0,0],[1,0],[1,1],[0,1]].forEach(function(ab){var X=lx[ab[0]],Y=ty[ab[1]],a=sv(X),b=shz(Y);
+  /* x = X + a·(y − h/2); y = Y + b·(x − w/2) */
+  var yy=(Y+b*(X-a*h/2-w/2))/(1-a*b),xx=X+a*(yy-h/2);Dc.push([xx,yy])});
+ var mvx=0;for(i=0;i<4;i++)mvx=Math.max(mvx,Math.hypot(Dc[i][0]-Ic[i][0],Dc[i][1]-Ic[i][1]));
+ if(mvx<0.6||mvx>Math.min(w,h)*0.06)return null;
+ var Hi=homog(Ic.map(function(p){return [p[0]*kx,p[1]*ky]}),Dc.map(function(p){return [p[0]*kx,p[1]*ky]}));if(!Hi)return null;
+ return [M[0]*Hi[0]+M[1]*Hi[3]+M[2]*Hi[6],M[0]*Hi[1]+M[1]*Hi[4]+M[2]*Hi[7],M[0]*Hi[2]+M[1]*Hi[5]+M[2]*Hi[8],
+  M[3]*Hi[0]+M[4]*Hi[3]+M[5]*Hi[6],M[3]*Hi[1]+M[4]*Hi[4]+M[5]*Hi[7],M[3]*Hi[2]+M[4]*Hi[5]+M[5]*Hi[8],
+  M[6]*Hi[0]+M[7]*Hi[3]+M[8]*Hi[6],M[6]*Hi[1]+M[7]*Hi[4]+M[8]*Hi[7],M[6]*Hi[2]+M[7]*Hi[5]+M[8]*Hi[8]]
+}catch(e){return null}}
+/* --- v16.11 orientación automática: si la foto se tomó de lado o de cabeza, averigua cuántos cuartos de vuelta
+   hay que girar la hoja para que el texto quede derecho. 1) Quita las líneas largas (tablas) y deja la tinta del texto.
+   2) Renglones horizontales o verticales: los renglones de texto hacen que el perfil por filas suba y baje con fuerza.
+   3) De cabeza o derecha: en español hay más tinta arriba del cuerpo de la letra (mayúsculas, b d f h k l t, acentos)
+   que abajo (g j p q y). Si no está segura, no gira. Devuelve {k: 0-3 (giros a la derecha), conf}. --- */
+function orient(img,q){try{
+ var sz=outSize(q,1600,img.w,img.h),o=warp(img,q,sz[0],sz[1]);if(!o)return {k:0,conf:0};
+ var w=o.w,h=o.h,n=w*h,d=o.data,L=new Float32Array(n),i,x,y;for(i=0;i<n;i++)L[i]=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
+ var bg=boxBlur(boxBlur(L,w,h,14),w,h,14),I=new Uint8Array(n),mg=Math.round(Math.min(w,h)*0.025),cnt=0;
+ for(y=mg;y<h-mg;y++)for(x=mg;x<w-mg;x++){i=y*w+x;if(L[i]<bg[i]*0.72&&L[i]<bg[i]-28)I[i]=1}
+ /* quitar líneas largas (bordes de tabla, subrayados) */
+ var Rh=Math.max(28,Math.round(w*0.05)),Rv=Math.max(28,Math.round(h*0.05)),K2=new Uint8Array(n),run,a;
+ for(y=0;y<h;y++){run=0;for(x=0;x<=w;x++){if(x<w&&I[y*w+x])run++;else{if(run>=Rh)for(a=x-run;a<x;a++){K2[y*w+a]=1;if(y>0)K2[(y-1)*w+a]=1;if(y<h-1)K2[(y+1)*w+a]=1}run=0}}}
+ for(x=0;x<w;x++){run=0;for(y=0;y<=h;y++){if(y<h&&I[y*w+x])run++;else{if(run>=Rv)for(a=y-run;a<y;a++){K2[a*w+x]=1;if(x>0)K2[a*w+x-1]=1;if(x<w-1)K2[a*w+x+1]=1}run=0}}}
+ for(i=0;i<n;i++){if(K2[i])I[i]=0;else if(I[i])cnt++}
+ if(cnt<n*0.003)return {k:0,conf:0};
+ function rot90(M,W,H){var R=new Uint8Array(W*H),x2,y2;for(y2=0;y2<H;y2++)for(x2=0;x2<W;x2++)if(M[y2*W+x2])R[x2*H+(H-1-y2)]=1;return R} /* giro a la derecha: W'=H */
+ /* renglones por bandas: cuánta tinta cae en renglones bien formados (alto razonable, con hueco arriba y abajo) y,
+    en cada renglón, la tinta sobre el cuerpo de la letra (A) y bajo él (D) */
+ function lines(M,W,H){var S=8,sw=Math.ceil(W/S),A=0,D=0,nl=0,inl=0,all=0,s,p=new Float64Array(H);
+  for(s=0;s<S;s++){var x0=s*sw,x1=Math.min(W,x0+sw),tw=x1-x0,yy,mn=Math.max(1,tw*0.008);if(tw<8)continue;
+   for(yy=0;yy<H;yy++){var c=0;for(var xx=x0;xx<x1;xx++)c+=M[yy*W+xx];p[yy]=c;all+=c}
+   yy=0;while(yy<H){if(p[yy]<mn){yy++;continue}var y0=yy,sum=0;while(yy<H&&p[yy]>=mn){sum+=p[yy];yy++}var y1=yy-1,hh=y1-y0+1;if(hh<5||hh>60)continue;
+    var pk=0,t;for(t=y0;t<=y1;t++)if(p[t]>pk)pk=p[t];var ct=-1,cb=-1;for(t=y0;t<=y1;t++)if(p[t]>=pk*0.5){if(ct<0)ct=t;cb=t}
+    if(cb-ct<2)continue;inl+=sum;var aa=0,dd=0;for(t=y0;t<ct;t++)aa+=p[t];for(t=cb+1;t<=y1;t++)dd+=p[t];if(aa>dd*1.2+1)A++;else if(dd>aa*1.2+1)D++;nl++}}
+  return {f:inl/Math.max(1,all),A:A,D:D,nl:nl}}
+ var Iv=rot90(I,w,h),LH=lines(I,w,h),LV=lines(Iv,h,w),ratio=(LH.f+0.02)/(LV.f+0.02);
+ if(ratio<1.18&&ratio>1/1.18)return {k:0,conf:0,r:ratio};
+ var horiz=ratio>=1.18,R=horiz?LH:LV,nl=R.nl;
+ /* pocos renglones o mal formados (por ejemplo, un teclado o una foto): no se gira */
+ if(R.f<0.8||R.A+R.D<20||nl<15)return {k:0,conf:0,r:ratio,nl:nl};
+ /* arriba o abajo: en español casi todos los renglones tienen más tinta arriba del cuerpo de la letra que abajo
+    (se cuenta renglón por renglón: cuántos tienen más arriba y cuántos más abajo) */
+ var ud=(R.A+1)/(R.D+1),up=true,c2=0;if(nl>=6){if(ud<0.83){up=false;c2=Math.min(1,(1/ud-1)/0.6)}else if(ud>1.2)c2=Math.min(1,(ud-1)/0.6)}
+ var k=horiz?(up?0:2):(up?1:3),c1=Math.min(1,(Math.max(ratio,1/ratio)-1)/0.45);
+ if(!horiz&&c2===0)return {k:0,conf:0,r:ratio,ud:ud,nl:nl};   /* de lado pero sin saber hacia dónde: no gira */
+ if(horiz&&!up&&c2<0.35)return {k:0,conf:0,r:ratio,ud:ud,nl:nl};
+ return {k:k,conf:horiz?(up?c2:c2):Math.min(c1,c2),r:ratio,ud:ud,nl:nl}
+}catch(e){return {k:0,conf:0}}}
 /* --- v16.9 orillas como CamScanner: lo que quedó fuera de la foto y las franjas oscuras (escritorio, sombra del borde)
    que tocan la orilla de la hoja se rellenan con el papel de alrededor. No toca líneas de tablas ni texto: solo zonas
    gruesas pegadas a la orilla y dentro de una franja del 9 % del lado menor. --- */
@@ -540,9 +646,13 @@ function aspect(q,iw,ih){var u0=iw/2,v0=ih/2,m1=[q[0][0],q[0][1],1],m2=[q[1][0],
  var n2=[k2*m2[0]-m1[0],k2*m2[1]-m1[1],k2*m2[2]-m1[2]],n3=[k3*m3[0]-m1[0],k3*m3[1]-m1[1],k3*m3[2]-m1[2]],D=Math.max(iw,ih);
  var aff=Math.hypot(n2[0],n2[1])/Math.max(1e-9,Math.hypot(n3[0],n3[1])),den=n2[2]*n3[2];
  /* casi de frente: la perspectiva no aporta información → proporción afín */
- if(Math.abs(n2[2])<1e-7*D&&Math.abs(n3[2])<1e-7*D||Math.abs(den)<1e-14)return aff;
- var f2=-((n2[0]*n3[0]-(n2[0]*n3[2]+n2[2]*n3[0])*u0+den*u0*u0)+(n2[1]*n3[1]-(n2[1]*n3[2]+n2[2]*n3[1])*v0+den*v0*v0))/den;
- if(!(f2>0))return aff;var f=Math.sqrt(f2);if(f<0.3*D||f>8*D)return aff;
+ if(Math.abs(n2[2])<1e-7*D&&Math.abs(n3[2])<1e-7*D)return aff;
+ /* v16.11: con una sola inclinación (foto tomada desde abajo o de lado) la distancia focal no se puede calcular;
+    entonces se usa la de la cámara principal de un celular (≈0.75 del lado mayor de la foto) en vez de la proporción afín */
+ var f=0;if(Math.abs(den)>=1e-14){var f2=-((n2[0]*n3[0]-(n2[0]*n3[2]+n2[2]*n3[0])*u0+den*u0*u0)+(n2[1]*n3[1]-(n2[1]*n3[2]+n2[2]*n3[1])*v0+den*v0*v0))/den;if(f2>0){f=Math.sqrt(f2);if(f<0.45*D||f>3*D)f=0}}
+ /* si uno de los dos lados casi no tiene fuga, el cálculo de la focal no es confiable */
+ if(Math.min(Math.abs(n2[2])*D/Math.max(1e-9,Math.hypot(n2[0],n2[1])),Math.abs(n3[2])*D/Math.max(1e-9,Math.hypot(n3[0],n3[1])))<0.1)f=0;
+ if(!f)f=0.75*D;
  function nm(n){var a=(n[0]-u0*n[2])/f,b=(n[1]-v0*n[2])/f,c=n[2];return a*a+b*b+c*c}
  var r=Math.sqrt(nm(n2)/nm(n3));return isFinite(r)&&r>0?r:aff}
 var PAPERS=[1.2941,1.4142,1.5455,1.5741,1.6471];
@@ -709,7 +819,7 @@ function pdf(pages,title){var enc=function(s){var u=new Uint8Array(s.length);for
  put('trailer\n<< /Size '+(info+1)+' /Root 1 0 R /Info '+info+' 0 R >>\nstartxref\n'+xo+'\n%%EOF\n');
  var out=new Uint8Array(len),o=0;parts.forEach(function(u){out.set(u,o);o+=u.length});return out}
 
-return {detect:detect,refine:refine,warp:warp,outSize:outSize,rotate:rotate,filter:filter,pdf:pdf,homog:homog,order:order,clean:clean,fxSafe:fxSafe,aspect:aspect}}</script>
+return {detect:detect,refine:refine,orient:orient,warp:warp,outSize:outSize,rotate:rotate,filter:filter,pdf:pdf,homog:homog,order:order,clean:clean,fxSafe:fxSafe,aspect:aspect}}</script>
 <script>
 'use strict';
 /* RAY Scanner · Puente (celular). Escanea como RAY Scanner (mismo motor: detección de orillas, recorte en
@@ -739,10 +849,10 @@ function ic(k,s){return '<svg width="'+(s||22)+'" height="'+(s||22)+'" viewBox="
 var CORE=$('coreSrc').textContent,K=(new Function(CORE+'\nreturn RAYSCAN_CORE()'))();
 var WK=null,wseq=0,wcb={};
 function worker(){if(WK!==null)return WK;try{var src=CORE+'\nvar K=RAYSCAN_CORE();\nfunction render(m){var o=K.warp(m.img,m.q,m.W,m.H);if(!o)throw new Error("perspectiva");o=K.clean(o,m.fx);o=K.rotate(o,m.rot||0);return K.filter(o,m.filter||"original",m.adj||{})}\n'+
- 'onmessage=function(e){var m=e.data,r;try{if(m.op==="detect")r=K.detect(m.a);else if(m.op==="refine")r=K.refine(m.a.img,m.a.quad);else if(m.op==="render")r=render(m.a);else if(m.op==="pdf")r=K.pdf(m.a.pages,m.a.title);var tr=r&&r.data&&r.data.buffer?[r.data.buffer]:r&&r.buffer?[r.buffer]:[];postMessage({id:m.id,r:r},tr)}catch(err){postMessage({id:m.id,err:String(err&&err.message||err)})}};';
+ 'onmessage=function(e){var m=e.data,r;try{if(m.op==="detect")r=K.detect(m.a);else if(m.op==="refine")r=K.refine(m.a.img,m.a.quad);else if(m.op==="orient")r=K.orient(m.a.img,m.a.q);else if(m.op==="render")r=render(m.a);else if(m.op==="pdf")r=K.pdf(m.a.pages,m.a.title);var tr=r&&r.data&&r.data.buffer?[r.data.buffer]:r&&r.buffer?[r.buffer]:[];postMessage({id:m.id,r:r},tr)}catch(err){postMessage({id:m.id,err:String(err&&err.message||err)})}};';
  WK=new Worker(URL.createObjectURL(new Blob([src],{type:'text/javascript'})));WK.onmessage=function(e){var c=wcb[e.data.id];if(!c)return;delete wcb[e.data.id];if(e.data.err)c.rej(new Error(e.data.err));else c.res(e.data.r)};
  WK.onerror=function(){var p=wcb;wcb={};WK=false;Object.keys(p).forEach(function(k){p[k].retry()})}}catch(e){WK=false}return WK}
-function local(op,a){if(op==='detect')return K.detect(a);if(op==='refine')return K.refine(a.img,a.quad);if(op==='pdf')return K.pdf(a.pages,a.title);var o=K.warp(a.img,a.q,a.W,a.H);if(!o)throw new Error('perspectiva');o=K.clean(o,a.fx);o=K.rotate(o,a.rot||0);return K.filter(o,a.filter||'original',a.adj||{})}
+function local(op,a){if(op==='detect')return K.detect(a);if(op==='refine')return K.refine(a.img,a.quad);if(op==='orient')return K.orient(a.img,a.q);if(op==='pdf')return K.pdf(a.pages,a.title);var o=K.warp(a.img,a.q,a.W,a.H);if(!o)throw new Error('perspectiva');o=K.clean(o,a.fx);o=K.rotate(o,a.rot||0);return K.filter(o,a.filter||'original',a.adj||{})}
 function run(op,a){return new Promise(function(res,rej){var w=worker();function onMain(){setTimeout(function(){try{res(local(op,a))}catch(e){rej(e)}},0)}if(!w){onMain();return}var id=++wseq;wcb[id]={res:res,rej:rej,retry:onMain};try{w.postMessage({id:id,op:op,a:a},a&&a.data&&a.data.buffer?[a.data.buffer]:a&&a.img&&a.img.data&&a.img.data.buffer?[a.img.data.buffer]:[])}catch(e){delete wcb[id];onMain()}})}
 function bitmap(blob){if(window.createImageBitmap)return createImageBitmap(blob,{imageOrientation:'from-image'}).catch(function(){return createImageBitmap(blob)}).catch(function(){return viaImg(blob)});return viaImg(blob)}
 function viaImg(blob){return new Promise(function(res,rej){var u=URL.createObjectURL(blob),im=new Image();im.onload=function(){res(im)};im.onerror=function(){URL.revokeObjectURL(u);rej(new Error('formato'))};im.src=u})}
@@ -763,7 +873,9 @@ function autoDetect(pg){return decode(pg.blob,420).then(function(sm){return run(
 function needMax(pg,max){var w=pg.w||0,h=pg.h||0,q=pg.quad;if(!w||!h||!q)return Math.round(max*1.15);var d=function(a,b){return Math.hypot((a[0]-b[0])*w,(a[1]-b[1])*h)},side=Math.max(d(q[0],q[1]),d(q[3],q[2]),d(q[0],q[3]),d(q[1],q[2])),f=side/Math.max(w,h);return Math.round(Math.min(Math.max(w,h),max*1.15/Math.max(0.25,f)))}
 function renderPg(pg,max,fx){return decode(pg.blob,needMax(pg,max)).then(function(src){var q=qpx(pg.quad,src),sz=K.outSize(q,max,src.w,src.h);return run('render',{img:src,q:q,W:sz[0],H:sz[1],rot:pg.rot,filter:pg.filter,adj:pg.adj,fx:fx===undefined?pg.fx:fx})}).then(toCanvas)}
 function refresh(pg){pg.v=(pg.v||0)+1;var v=pg.v;pg.prev0='';return renderPg(pg,1300).then(function(c){if(pg.v!==v)return;pg.prev=c.toDataURL('image/jpeg',0.85);var t=document.createElement('canvas'),s=170/Math.max(c.width,c.height);t.width=Math.round(c.width*s);t.height=Math.round(c.height*s);t.getContext('2d').drawImage(c,0,0,t.width,t.height);pg.thumb=t.toDataURL('image/jpeg',0.75);saveDraft()})}
-function newPage(blob){return normSource(blob).then(function(src){var pg={id:rid(6),blob:src.blob,w:src.w,h:src.h,quad:FULL.slice(),auto:false,filter:LAST_F,rot:0,adj:{b:0,c:0,s:0,n:0},fx:LAST_FX?Object.assign({},LAST_FX):null,thumb:'',prev:''};return autoDetect(pg).then(function(){return refresh(pg)}).then(function(){return pg})})}
+/* v16.11: si la foto se tomó de lado o de cabeza, la página se gira sola para que el texto quede derecho */
+function autoOrient(pg){if(!pg||pg.pdf)return Promise.resolve();return decode(pg.blob,2400).then(function(big){return run('orient',{img:big,q:qpx(pg.quad,big)})}).then(function(r){if(r&&r.k&&r.conf>=0.3){pg.rot=r.k;pg.rotAuto=r.k}return r},function(){})}
+function newPage(blob){return normSource(blob).then(function(src){var pg={id:rid(6),blob:src.blob,w:src.w,h:src.h,quad:FULL.slice(),auto:false,filter:LAST_F,rot:0,adj:{b:0,c:0,s:0,n:0},fx:LAST_FX?Object.assign({},LAST_FX):null,thumb:'',prev:''};return autoDetect(pg).then(function(){return autoOrient(pg)}).then(function(){return refresh(pg)}).then(function(){return pg})})}
 var LAST_F=DEF,LAST_FX=(function(){var f=ls('rayPuenteFx');return f&&K.fxSafe(f)})();
 function setFx(pg,f){pg.fx=K.fxSafe(f);var keep=pg.fx?Object.assign({},pg.fx):null;if(keep)delete keep.mk;LAST_FX=keep&&K.fxSafe(keep);ls('rayPuenteFx',LAST_FX)}
 /* ---------- borrador (si el navegador recarga la página, no se pierde el escaneo) ---------- */
@@ -829,7 +941,7 @@ function shoot(){if(CAPT)return;if(PG.length>=MAXP){toast('Máximo '+MAXP+' pág
  var v=$('vid'),ref=sharpRef(),p;$('hint').textContent='Tomando foto en alta calidad…';try{p=hiPhoto(v)}catch(e){p=bestFrame(v)}
  p.then(function(b){LIVE.stable=0;LIVE.q=null;LIVE.cool=performance.now()+2600;CAPT=false;addBlobs([b],ref)},function(){CAPT=false;toast('No se pudo tomar la foto.')})}
 function frame(v){return bestFrame(v)}
-var PEND=0;function addBlobs(list,ref){list.forEach(function(b){PEND++;stack();newPage(b).then(function(pg){PG.push(pg);PEND--;stack();saveDraft();
+var PEND=0;function addBlobs(list,ref){list.forEach(function(b){PEND++;stack();newPage(b).then(function(pg){PG.push(pg);PEND--;stack();saveDraft();if(pg.rotAuto)toast('Giré la hoja para que el texto quede derecho. Si no quedó bien, usa «Girar».');
    if(ref)decode(pg.blob,520).then(function(sm){var k=sharpOf(sm)/ref;if(k<0.45){pg.blur=1;toast('⚠ La foto salió movida o desenfocada. Puedes repetirla para que el PDF quede nítido.');if($('ed').classList.contains('on'))edit()}}).catch(function(){})},function(){PEND--;stack();toast('No se pudo leer una foto.')})})}
 function stack(){var s=$('stack'),last=PG[PG.length-1];s.classList.toggle('none',!PG.length&&!PEND);s.style.backgroundImage=last&&last.thumb?'url('+last.thumb+')':'';$('cnt').textContent=PG.length+(PEND?'+':'')}
 /* ---------- revisión y edición ---------- */
